@@ -156,7 +156,13 @@
 		</dict>
 	</array>
 	<key>readme</key>
-	<string>Select text and press ⌃⌥C, or type 'cal' in Alfred, to extract calendar events and save as .ics on Desktop.</string>
+	<string>Select text and press ⌃⌥C, or type 'cal' in Alfred, to extract calendar events and open them in Calendar. Events without a time become all-day entries; events without an end time get two hours.
+
+A continuous span like a trip or a fair from 12. to 14.9. becomes one multi-day entry. When the text gives opening hours that repeat on each day, you get one entry per day, so the evenings in between stay free.
+
+An event at a clearly foreign location keeps that location's timezone, so a Bangkok hotel check-in stays correct. Everything else uses the Default timezone above, or the Mac's own setting when that is empty.
+
+The OpenAI key goes in the configuration above, or in ~/.config/openai-key.</string>
 	<key>uidata</key>
 	<dict>
 		<key>hotkey-trigger</key>
