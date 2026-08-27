@@ -45,7 +45,13 @@ cal Dentist on 15 October at 9:30, Dr Berger, Vienna
 ```
 
 Events more than 30 days in the past are dropped, on the assumption they are
-stale context rather than something you want in the calendar.
+stale context rather than something you want in the calendar. A multi-day event
+counts as past only once its last day has gone by, so a running trip survives.
+
+A continuous span becomes one multi-day entry: a holiday flat booked from the
+12th to the 14th is a single all-day banner. When the text instead gives hours
+that repeat on each day, you get one entry per day, so a fair open 10 to 18
+leaves the evenings in between free.
 
 Each event gets two reminders, one day before and one hour before.
 
@@ -63,6 +69,12 @@ environment variables if you run the script directly.
 The time zone matters. Events are written with an explicit `VTIMEZONE` block
 built from that zone's real offsets, so daylight saving is handled wherever you
 are, including the southern hemisphere.
+
+`TEXT_TO_ICS_TZ` is only the fallback. When a location pins the zone by itself,
+that event uses it instead: a Bangkok hotel check-in at 15:00 stays 15:00 in
+Bangkok rather than becoming 15:00 at home. Each zone in play gets its own
+`VTIMEZONE` block, and a zone the model invents is ignored in favour of the
+fallback.
 
 ## Command line
 

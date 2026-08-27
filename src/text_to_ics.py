@@ -12,9 +12,12 @@ from datetime import datetime, timedelta, timezone
 
 import urllib.error
 import urllib.request
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 API_URL = "https://api.openai.com/v1/chat/completions"
 API_KEY_FILE = os.path.expanduser("~/.config/openai-key")
+
+
 def _system_timezone():
     """The Mac's current zone, e.g. Europe/Berlin. Falls back to UTC."""
     try:
@@ -24,14 +27,12 @@ def _system_timezone():
 
 
 def _vtimezone(tz_name):
-    """A _vtimezone(TZ) block for tz_name, from the zone's real offsets.
+    """A VTIMEZONE block for tz_name, from the zone's real offsets.
 
     Calendar clients need the offsets spelled out. Rather than hardcode one
     region's rules, read this year's standard and daylight offsets from the
     zone itself. Zones without daylight saving get a single STANDARD block.
     """
-    from zoneinfo import ZoneInfo
-
     zone = ZoneInfo(tz_name)
     year = datetime.now().year
     offsets = {}
@@ -68,14 +69,16 @@ def _vtimezone(tz_name):
         "END:STANDARD",
         "END:VTIMEZONE",
     ]
-    return "\r\n".join(lines)
+    # Plain newlines: fold_line splits on them and re-joins with CRLF.
+    return "\n".join(lines)
 
 
 MODEL = os.environ.get("TEXT_TO_ICS_MODEL", "gpt-4.1")
 DEFAULT_DURATION_HOURS = 2
-# IANA zone for the generated events. Override with TEXT_TO_ICS_TZ, or leave it
-# to follow the Mac's own setting. The _vtimezone(TZ) block below is built from the
-# zone's real transition rules, so it is correct outside Central Europe too.
+# Fallback zone for events whose location implies nothing. Override with
+# TEXT_TO_ICS_TZ, or leave it to follow the Mac's own setting. Every zone in use
+# gets a VTIMEZONE block built from its real transition rules, so this is
+# correct outside Central Europe too.
 TZ = os.environ.get("TEXT_TO_ICS_TZ") or _system_timezone()
 
 
@@ -95,14 +98,16 @@ EVENTS_RESPONSE_FORMAT = {
                         "type": "object",
                         "additionalProperties": False,
                         "required": [
-                            "summary", "date", "start_time", "end_time",
+                            "summary", "date", "end_date", "start_time", "end_time", "timezone",
                             "location", "description", "url", "organizer", "categories",
                         ],
                         "properties": {
                             "summary": {"type": "string"},
                             "date": {"type": "string", "description": "YYYY-MM-DD"},
+                            "end_date": {"type": ["string", "null"], "description": "YYYY-MM-DD, last day of a span"},
                             "start_time": {"type": ["string", "null"], "description": "HH:MM 24h"},
                             "end_time": {"type": ["string", "null"], "description": "HH:MM 24h"},
+                            "timezone": {"type": ["string", "null"], "description": "IANA zone, e.g. Asia/Bangkok"},
                             "location": {"type": ["string", "null"]},
                             "description": {"type": ["string", "null"]},
                             "url": {"type": ["string", "null"]},
@@ -128,8 +133,10 @@ Schema:
     {{
       "summary": "Event title",
       "date": "YYYY-MM-DD",
+      "end_date": "YYYY-MM-DD" or null,
       "start_time": "HH:MM" or null,
       "end_time": "HH:MM" or null,
+      "timezone": "IANA timezone of the location" or null,
       "location": "Full address if available, otherwise venue/city" or null,
       "description": "All additional details" or null,
       "url": "URL if found in text" or null,
@@ -147,6 +154,12 @@ Rules:
 - Extract ALL events found in the text
 - Use 24-hour time format
 - If no specific start time, set start_time to null
+- Set end_date only for a continuous span (trip, stay, holiday, multi-day fair)
+- If hours repeat on each day of a span, emit one event per day and no end_date
+- Times are always the LOCAL wall-clock time at the event's location
+- Set timezone to the IANA identifier implied by the location (e.g. a Bangkok
+  hotel booking -> "Asia/Bangkok"), but only when the location makes it
+  unambiguous; otherwise null
 - Parse as much detail as possible into the description: prices, ticket info,
   seat/section info, booking references, performer names, notes, conditions
 - Prefer full addresses for location (street, zip, city, country) when available
@@ -227,15 +240,46 @@ def extract_events(text, api_key):
     kept = []
     for ev in events:
         try:
-            d = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+            dt = datetime.strptime(ev["date"], "%Y-%m-%d")
         except (KeyError, ValueError, TypeError):
             print(f"Skipping event with bad date: {ev.get('summary', '?')}", file=sys.stderr)
             continue
+        # A running multi-day event is not past until its last day.
+        d = last_day(ev, dt).date()
         if d < cutoff:
             print(f"Skipping event in the past: {ev.get('summary', '?')} ({d})", file=sys.stderr)
             continue
         kept.append(ev)
     return kept
+
+
+def event_timezone(event):
+    """The event's own zone when the model named a real one, else the default."""
+    name = (event.get("timezone") or "").strip()
+    if not name:
+        return TZ
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        print(f"Ignoring invalid timezone from API: {name}", file=sys.stderr)
+        return TZ
+    return name
+
+
+def last_day(event, start):
+    """Last day of a span; the start day when there is no usable end_date."""
+    value = (event.get("end_date") or "").strip()
+    if not value:
+        return start
+    try:
+        end = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        print(f"Ignoring unparsable end date: {value}", file=sys.stderr)
+        return start
+    if end < start:
+        print(f"Ignoring end date before start date: {value}", file=sys.stderr)
+        return start
+    return end
 
 
 def ics_escape(text):
@@ -245,13 +289,8 @@ def ics_escape(text):
 
 
 def build_ics(events):
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Text to ICS//Alfred Workflow//EN",
-        "CALSCALE:GREGORIAN",
-        _vtimezone(TZ),
-    ]
+    lines = []
+    zones = []
     for ev in events:
         try:
             dt = datetime.strptime(ev["date"], "%Y-%m-%d")
@@ -259,23 +298,31 @@ def build_ics(events):
             continue
         start_time = ev.get("start_time")
         end_time = ev.get("end_time")
+        dt_last = last_day(ev, dt)
 
         lines.append("BEGIN:VEVENT")
         lines.append(f"UID:{uuid.uuid4()}@text-to-ics")
 
         if start_time:
+            tz_name = event_timezone(ev)
+            if tz_name not in zones:
+                zones.append(tz_name)
             h, m = map(int, start_time.split(":"))
             dt_start = dt.replace(hour=h, minute=m)
             if end_time:
                 eh, em = map(int, end_time.split(":"))
-                dt_end = dt.replace(hour=eh, minute=em)
+                dt_end = dt_last.replace(hour=eh, minute=em)
+                # On a single day, an end at or before the start runs past midnight.
+                if dt_end <= dt_start:
+                    dt_end += timedelta(days=1)
             else:
-                dt_end = dt_start + timedelta(hours=DEFAULT_DURATION_HOURS)
-            lines.append(f"DTSTART;TZID={TZ}:{dt_start.strftime('%Y%m%dT%H%M%S')}")
-            lines.append(f"DTEND;TZID={TZ}:{dt_end.strftime('%Y%m%dT%H%M%S')}")
+                dt_end = dt_last.replace(hour=h, minute=m) + timedelta(hours=DEFAULT_DURATION_HOURS)
+            lines.append(f"DTSTART;TZID={tz_name}:{dt_start.strftime('%Y%m%dT%H%M%S')}")
+            lines.append(f"DTEND;TZID={tz_name}:{dt_end.strftime('%Y%m%dT%H%M%S')}")
         else:
+            # All-day DTEND is exclusive, so a span ends the day after its last day.
             lines.append(f"DTSTART;VALUE=DATE:{dt.strftime('%Y%m%d')}")
-            lines.append(f"DTEND;VALUE=DATE:{(dt + timedelta(days=1)).strftime('%Y%m%d')}")
+            lines.append(f"DTEND;VALUE=DATE:{(dt_last + timedelta(days=1)).strftime('%Y%m%d')}")
 
         lines.append(f"SUMMARY:{ics_escape(ev.get('summary', 'Event'))}")
         if ev.get("location"):
@@ -307,13 +354,21 @@ def build_ics(events):
 
         lines.append("END:VEVENT")
 
-    lines.append("END:VCALENDAR")
-    return "\r\n".join(fold_line(l) for l in lines)
+    header = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Text to ICS//Alfred Workflow//EN",
+        "CALSCALE:GREGORIAN",
+    ]
+    # Only the zones actually referenced by a TZID above, so an all-day-only
+    # file carries no VTIMEZONE at all.
+    header += [_vtimezone(z) for z in zones]
+    return "\r\n".join(fold_line(l) for l in header + lines + ["END:VCALENDAR"])
 
 
 def fold_line(line):
     # RFC 5545: lines longer than 75 octets must be folded with CRLF + space.
-    # _vtimezone(TZ) block already contains its own newlines; fold per sub-line.
+    # A VTIMEZONE block already contains its own newlines; fold per sub-line.
     if "\n" in line:
         return "\r\n".join(fold_line(sub) for sub in line.split("\n"))
     encoded = line.encode("utf-8")
