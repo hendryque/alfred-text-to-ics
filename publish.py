@@ -91,7 +91,12 @@ def main():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for path in ("workflow/icon.png", f"workflow/{Path(script).name}", "workflow/info.plist"):
-            z.writestr(Path(path).name, head_bytes(path))
+            info = zipfile.ZipInfo(Path(path).name)
+            # writestr records no permissions, which installs the script as
+            # 0600; Alfred then runs ./script and gets "Permission denied" on
+            # stderr, where nothing surfaces it. Set the mode explicitly.
+            info.external_attr = (0o755 if path.endswith(".py") else 0o644) << 16
+            z.writestr(info, head_bytes(path), zipfile.ZIP_DEFLATED)
     Path(bundle).write_bytes(buf.getvalue())
     print(f"built {bundle} ({len(buf.getvalue())} bytes) from HEAD")
 

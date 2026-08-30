@@ -169,6 +169,20 @@ Rules:
 
 
 
+def fail(message, detail=""):
+    """Report and stop.
+
+    The message goes to stdout because the Alfred notification only shows
+    stdout; anything on stderr is invisible outside the debug console. The
+    server's response body is detail, and stays on stderr so the notification
+    keeps to one readable line.
+    """
+    print(message)
+    if detail:
+        print(detail, file=sys.stderr)
+    raise SystemExit(1)
+
+
 def load_api_key():
     """Environment first, then the key file. Neither is a fatal surprise."""
     key = os.environ.get("OPENAI_API_KEY")
@@ -178,12 +192,12 @@ def load_api_key():
         with open(API_KEY_FILE, "r") as f:
             key = f.read().strip()
     except FileNotFoundError:
-        raise SystemExit(
+        fail(
             "No API key. Set OPENAI_API_KEY in the workflow configuration, "
             f"or put the key in {API_KEY_FILE}."
         )
     if not key:
-        raise SystemExit(f"{API_KEY_FILE} is empty.")
+        fail(f"{API_KEY_FILE} is empty.")
     return key
 
 
@@ -193,7 +207,7 @@ def get_input_text():
     result = subprocess.run(["pbpaste"], capture_output=True, text=True)
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
-    raise SystemExit("No input text")
+    fail("No input text")
 
 
 def extract_events(text, api_key):
@@ -225,13 +239,13 @@ def extract_events(text, api_key):
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
         if exc.code == 401:
-            raise SystemExit(f"OpenAI rejected the key (401).\n{detail}")
+            fail("OpenAI rejected the key (401). Check it in the workflow configuration.", detail)
         if exc.code == 429:
-            raise SystemExit(f"Rate limited or out of quota (429).\n{detail}")
-        raise SystemExit(f"OpenAI returned HTTP {exc.code}.\n{detail}")
+            fail("Rate limited or out of quota (429).", detail)
+        fail(f"OpenAI returned HTTP {exc.code}.", detail)
     except urllib.error.URLError as exc:
         # No response object exists here, so nothing may reference one.
-        raise SystemExit(f"Could not reach OpenAI: {exc.reason}")
+        fail(f"Could not reach OpenAI: {exc.reason}")
 
     content = body["choices"][0]["message"]["content"].strip()
     events = json.loads(content).get("events", [])
