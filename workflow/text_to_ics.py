@@ -73,7 +73,7 @@ def _vtimezone(tz_name):
     return "\n".join(lines)
 
 
-MODEL = os.environ.get("TEXT_TO_ICS_MODEL", "gpt-4.1")
+MODEL = os.environ.get("TEXT_TO_ICS_MODEL", "").strip() or "gpt-4.1"
 DEFAULT_DURATION_HOURS = 2
 # Fallback zone for events whose location implies nothing. Override with
 # TEXT_TO_ICS_TZ, or leave it to follow the Mac's own setting. Every zone in use
