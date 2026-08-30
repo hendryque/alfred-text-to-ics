@@ -94,6 +94,9 @@ on their side, and think twice before running it over anything confidential.
 
 ## Troubleshooting
 
+Failures show up as a notification saying what went wrong; the full response
+body stays in Alfred's debug console.
+
 **No API key.** Neither the workflow field nor `~/.config/openai-key` had one.
 
 **OpenAI rejected the key (401).** Wrong or revoked key.
@@ -106,6 +109,25 @@ year often helps.
 
 **Skipping event with bad date.** One event came back malformed; the rest still
 go through. The message names which one.
+
+**Nothing happens at all.** A failure normally shows as a notification, so
+silence points at the workflow rather than at OpenAI: check that
+`text_to_ics.py` is executable.
+
+## Releasing
+
+`publish.py` builds the bundle and creates the GitHub release:
+
+```sh
+./publish.py --check     # run the guards, build nothing
+./publish.py 1.2.3       # must match version in workflow/info.plist
+```
+
+It refuses a dirty tree, requires `main` to match `origin/main`, and checks that
+`src/` and `workflow/` are byte-identical, that the plist parses, that the script
+compiles under the Command Line Tools Python, and that no configuration value is
+baked into the bundle. The zip is built from `HEAD` rather than the working
+directory, so the asset always matches the tag.
 
 ## Licence
 
