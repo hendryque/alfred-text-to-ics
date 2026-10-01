@@ -94,15 +94,18 @@ on their side, and think twice before running it over anything confidential.
 
 ## Troubleshooting
 
-Failures show up as a notification saying what went wrong; the full response
-body stays in Alfred's debug console.
+Failures show up as an alert that stays until you dismiss it, and as a
+notification; the full response body stays in Alfred's debug console.
 
 **No API key.** Neither the workflow field nor `~/.config/openai-key` had one.
 
 **OpenAI rejected the key (401).** Wrong or revoked key.
 
-**Rate limited or out of quota (429).** Your account has no credit, or you hit
-a limit.
+**OpenAI account is out of credits.** Top up under Billing on
+platform.openai.com; retrying will not help until you do.
+
+**Rate limited by OpenAI (429).** Too many requests in a short time. Wait and
+retry.
 
 **No events found in text.** The model saw nothing datelike. Adding an explicit
 year often helps.
@@ -110,7 +113,7 @@ year often helps.
 **Skipping event with bad date.** One event came back malformed; the rest still
 go through. The message names which one.
 
-**Nothing happens at all.** A failure normally shows as a notification, so
+**Nothing happens at all.** A failure normally shows as an alert, so
 silence points at the workflow rather than at OpenAI: check that
 `text_to_ics.py` is executable.
 

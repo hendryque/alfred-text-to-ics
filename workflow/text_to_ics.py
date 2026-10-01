@@ -176,11 +176,34 @@ def fail(message, detail=""):
     stdout; anything on stderr is invisible outside the debug console. The
     server's response body is detail, and stays on stderr so the notification
     keeps to one readable line.
+
+    The notification alone is too easy to miss: a banner is gone in seconds and
+    Focus suppresses it entirely. So the message also goes to an alert that
+    stays until dismissed.
     """
     print(message)
     if detail:
         print(detail, file=sys.stderr)
+    alert(message)
     raise SystemExit(1)
+
+
+def alert(message):
+    """Best effort; a failed alert must not hide the error being reported."""
+    script = (
+        "on run argv\n"
+        "  tell me to activate\n"
+        "  display alert (item 1 of argv) message (item 2 of argv) as critical giving up after 120\n"
+        "end run"
+    )
+    try:
+        subprocess.run(
+            ["osascript", "-e", script, "Text to ICS failed", message],
+            capture_output=True,
+            timeout=130,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def load_api_key():
@@ -237,11 +260,15 @@ def extract_events(text, api_key):
         with urllib.request.urlopen(req, timeout=60) as resp:
             body = json.load(resp)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:300]
+        error_body = exc.read().decode("utf-8", "replace")
+        detail = error_body[:300]
         if exc.code == 401:
             fail("OpenAI rejected the key (401). Check it in the workflow configuration.", detail)
+        if exc.code == 429 and ("insufficient_quota" in error_body or "credit_balance_exhausted" in error_body):
+            # Same status as a rate limit, but waiting will not help.
+            fail("OpenAI account is out of credits. Add credits at platform.openai.com > Billing.", detail)
         if exc.code == 429:
-            fail("Rate limited or out of quota (429).", detail)
+            fail("Rate limited by OpenAI (429). Wait a minute and try again.", detail)
         fail(f"OpenAI returned HTTP {exc.code}.", detail)
     except urllib.error.URLError as exc:
         # No response object exists here, so nothing may reference one.
