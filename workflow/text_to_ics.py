@@ -2,6 +2,7 @@
 import warnings
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports")
 
+import calendar
 import os
 import sys
 import json
@@ -98,13 +99,19 @@ EVENTS_RESPONSE_FORMAT = {
                         "type": "object",
                         "additionalProperties": False,
                         "required": [
-                            "summary", "date", "end_date", "start_time", "end_time", "timezone",
+                            "summary", "date", "end_date",
+                            "written_day", "written_month", "written_year", "written_weekday",
+                            "start_time", "end_time", "timezone",
                             "location", "description", "url", "organizer", "categories",
                         ],
                         "properties": {
                             "summary": {"type": "string"},
                             "date": {"type": "string", "description": "YYYY-MM-DD"},
                             "end_date": {"type": ["string", "null"], "description": "YYYY-MM-DD, last day of a span"},
+                            "written_day": {"type": ["integer", "null"], "description": "Start day as written"},
+                            "written_month": {"type": ["integer", "null"], "description": "Start month as written, 1-12"},
+                            "written_year": {"type": ["integer", "null"], "description": "Start year as written, four digits"},
+                            "written_weekday": {"type": ["integer", "null"], "description": "Start weekday as written, 1 Monday to 7 Sunday"},
                             "start_time": {"type": ["string", "null"], "description": "HH:MM 24h"},
                             "end_time": {"type": ["string", "null"], "description": "HH:MM 24h"},
                             "timezone": {"type": ["string", "null"], "description": "IANA zone, e.g. Asia/Bangkok"},
@@ -134,6 +141,10 @@ Schema:
       "summary": "Event title",
       "date": "YYYY-MM-DD",
       "end_date": "YYYY-MM-DD" or null,
+      "written_day": 20 or null,
+      "written_month": 2 or null,
+      "written_year": 2027 or null,
+      "written_weekday": 6 or null,
       "start_time": "HH:MM" or null,
       "end_time": "HH:MM" or null,
       "timezone": "IANA timezone of the location" or null,
@@ -150,6 +161,12 @@ Date anchor:
 - Resolve all relative dates ("tomorrow", "next Friday", bare "June 5") against this.
 - NEVER output a year other than {year} or {next_year} unless the source text states one explicitly.
 - If a bare month/day has already passed this year, use {next_year}.
+- The written_ fields hold only what the text literally states for the day this
+  event starts: "Sa 20.2." gives day 20, month 2, weekday 6, year null, and a span
+  "vom 20.2. bis 22.2." gives day 20, month 2. With one event per day, each event
+  gives its own day. Never work them out or correct them. Set all four to null for
+  relative dates ("tomorrow", "next Friday"), and set written_weekday to null unless
+  a day and month are written.
 Rules:
 - Extract ALL events found in the text
 - Use 24-hour time format
@@ -275,23 +292,86 @@ def extract_events(text, api_key):
         fail(f"Could not reach OpenAI: {exc.reason}")
 
     content = body["choices"][0]["message"]["content"].strip()
-    events = json.loads(content).get("events", [])
+    return json.loads(content).get("events", [])
 
-    cutoff = (now - timedelta(days=30)).date()
-    kept = []
-    for ev in events:
+
+def written_date(event):
+    return tuple(event.get(f"written_{part}") for part in ("day", "month", "year"))
+
+
+def guessed_start(event):
+    try:
+        return datetime.strptime(event["date"], "%Y-%m-%d")
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def written_start(event, span, cutoff):
+    """The start date as the text wrote it; None when it wrote no valid day and month.
+
+    The model cannot be trusted with the year: it read "Samstag 20.2." as the
+    current year and moved the day to fit the weekday. So it only copies what is
+    written, and the calendar work happens here. Without a written year this is
+    the first occurrence whose last day has not passed the cutoff.
+    """
+    day, month, year = written_date(event)
+    if not day or not month:
+        return None
+    # Nine years, because 29 February can be eight years away.
+    for candidate in [year] if year else range(cutoff.year, cutoff.year + 9):
         try:
-            dt = datetime.strptime(ev["date"], "%Y-%m-%d")
-        except (KeyError, ValueError, TypeError):
-            print(f"Skipping event with bad date: {ev.get('summary', '?')}", file=sys.stderr)
+            start = datetime(candidate, month, day)
+        except ValueError:
+            continue
+        if year or (start + span).date() >= cutoff:
+            return start
+    return None
+
+
+def resolve_events(events, now):
+    """Settle each event's dates. Returns the events to keep, and notes for the user."""
+    cutoff = (now - timedelta(days=30)).date()
+    # A fair with daily hours is one event per day, and the model may give them
+    # all the first day as written. Their own guesses still say how far apart they are.
+    earliest = {}
+    for ev in events:
+        guess = guessed_start(ev)
+        if guess:
+            key = written_date(ev)
+            earliest[key] = min(guess, earliest.get(key, guess))
+
+    kept, past, notes = [], [], []
+    for ev in events:
+        summary = ev.get("summary", "?")
+        guess = guessed_start(ev)
+        span = last_day(ev, guess) - guess if guess else timedelta(0)
+        written = written_start(ev, span, cutoff)
+        offset = guess - earliest[written_date(ev)] if guess else timedelta(0)
+        start = written + offset if written else guess
+        if start is None:
+            print(f"Skipping event with bad date: {summary}", file=sys.stderr)
+            notes.append(f"Skipped {summary}: no usable date.")
             continue
         # A running multi-day event is not past until its last day.
-        d = last_day(ev, dt).date()
+        d = (start + span).date()
         if d < cutoff:
-            print(f"Skipping event in the past: {ev.get('summary', '?')} ({d})", file=sys.stderr)
+            print(f"Skipping event in the past: {summary} ({d})", file=sys.stderr)
+            past.append(f"{summary} ({d})")
             continue
+        ev["date"] = start.strftime("%Y-%m-%d")
+        if span:
+            ev["end_date"] = d.strftime("%Y-%m-%d")
+        weekday = ev.get("written_weekday")
+        if written and weekday in range(1, 8) and weekday != written.isoweekday():
+            notes.append(
+                f"Check the date: {written.day} {written:%B %Y} is a {written:%A}, "
+                f"not a {calendar.day_name[weekday - 1]}."
+            )
         kept.append(ev)
-    return kept
+    if past:
+        n = len(past)
+        notes.append(f"Skipped {n} past event{'s' if n != 1 else ''}: {', '.join(past)}.")
+    return kept, notes
 
 
 def event_timezone(event):
@@ -432,8 +512,10 @@ def main():
     try:
         text = get_input_text()
         api_key = load_api_key()
-        events = extract_events(text, api_key)
+        events, notes = resolve_events(extract_events(text, api_key), datetime.now())
         if not events:
+            if notes:
+                fail(" ".join(notes))
             print("No events found in text")
             return
 
@@ -446,7 +528,7 @@ def main():
         subprocess.run(["open", filepath], check=False)
 
         n = len(events)
-        print(f"Opened {n} event{'s' if n != 1 else ''} in Calendar")
+        print(" ".join([f"Opened {n} event{'s' if n != 1 else ''} in Calendar.", *notes]))
 
     except json.JSONDecodeError:
         print("Failed to parse event data from API")

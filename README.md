@@ -44,9 +44,14 @@ with text on the clipboard, or
 cal Dentist on 15 October at 9:30, Dr Berger, Vienna
 ```
 
+A date with no year means its next occurrence, so in November `Sa 20.2.` is next
+February. Only a date from the last 30 days stays where it is. When a written
+weekday does not fit the date, the date wins and the notification says so.
+
 Events more than 30 days in the past are dropped, on the assumption they are
-stale context rather than something you want in the calendar. A multi-day event
-counts as past only once its last day has gone by, so a running trip survives.
+stale context rather than something you want in the calendar, and you are told
+which ones. A multi-day event counts as past only once its last day has gone by,
+so a running trip survives.
 
 A continuous span becomes one multi-day entry: a holiday flat booked from the
 12th to the 14th is a single all-day banner. When the text instead gives hours
@@ -107,11 +112,17 @@ platform.openai.com; retrying will not help until you do.
 **Rate limited by OpenAI (429).** Too many requests in a short time. Wait and
 retry.
 
-**No events found in text.** The model saw nothing datelike. Adding an explicit
-year often helps.
+**No events found in text.** The model found no event in the text at all.
 
-**Skipping event with bad date.** One event came back malformed; the rest still
-go through. The message names which one.
+**Skipped 1 past event.** Its date is more than 30 days gone, either because you
+wrote that year or because the model resolved a relative date that way. The
+message names it and the date it got.
+
+**Check the date.** The event was created, but the weekday you wrote does not
+fit its date.
+
+**Skipped ...: no usable date.** One event came back malformed; the rest still go
+through.
 
 **Nothing happens at all.** A failure normally shows as an alert, so
 silence points at the workflow rather than at OpenAI: check that
