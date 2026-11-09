@@ -223,20 +223,79 @@ The OpenAI key goes in the configuration above, or in ~/.config/openai-key.</str
 				<key>default</key>
 				<string></string>
 				<key>placeholder</key>
-				<string>gpt-4.1</string>
+				<string>gpt-6-luna</string>
 				<key>required</key>
 				<false/>
 				<key>trim</key>
 				<true/>
 			</dict>
 			<key>description</key>
-			<string>Empty uses gpt-4.1.</string>
+			<string>Empty uses gpt-6-luna.</string>
 			<key>label</key>
 			<string>Model</string>
 			<key>type</key>
 			<string>textfield</string>
 			<key>variable</key>
 			<string>TEXT_TO_ICS_MODEL</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string>low</string>
+				<key>pairs</key>
+				<array>
+					<array>
+						<string>Model default</string>
+						<string>default</string>
+					</array>
+					<array>
+						<string>None</string>
+						<string>none</string>
+					</array>
+					<array>
+						<string>Low</string>
+						<string>low</string>
+					</array>
+					<array>
+						<string>Medium</string>
+						<string>medium</string>
+					</array>
+					<array>
+						<string>High</string>
+						<string>high</string>
+					</array>
+				</array>
+				<key>required</key>
+				<false/>
+			</dict>
+			<key>description</key>
+			<string>Higher can be more accurate but takes longer. Use Model default for a model that refuses this.</string>
+			<key>label</key>
+			<string>Reasoning</string>
+			<key>type</key>
+			<string>popupbutton</string>
+			<key>variable</key>
+			<string>TEXT_TO_ICS_REASONING</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<true/>
+				<key>required</key>
+				<false/>
+				<key>text</key>
+				<string>Use OpenAI's Fast mode</string>
+			</dict>
+			<key>description</key>
+			<string>Quicker, at twice the price.</string>
+			<key>label</key>
+			<string>Fast mode</string>
+			<key>type</key>
+			<string>checkbox</string>
+			<key>variable</key>
+			<string>TEXT_TO_ICS_FAST</string>
 		</dict>
 		<dict>
 			<key>config</key>
@@ -259,12 +318,81 @@ The OpenAI key goes in the configuration above, or in ~/.config/openai-key.</str
 			<key>variable</key>
 			<string>TEXT_TO_ICS_TZ</string>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>30</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>How far back a date may lie. Older dates without a year move to their next occurrence; older dates with a year are dropped. Empty uses 30.</string>
+			<key>label</key>
+			<string>Lookback days</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>TEXT_TO_ICS_LOOKBACK_DAYS</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>1d, 1h</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>Times before the event, like 30m or 2h, separated by commas. none turns them off. Empty uses 1d, 1h.</string>
+			<key>label</key>
+			<string>Reminders</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>TEXT_TO_ICS_REMINDERS</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>placeholder</key>
+				<string>2h</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+			</dict>
+			<key>description</key>
+			<string>For an event with a start but no end, like 45m or 3h. Empty uses 2h.</string>
+			<key>label</key>
+			<string>Default length</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>TEXT_TO_ICS_DEFAULT_LENGTH</string>
+		</dict>
 	</array>
 	<key>variables</key>
 	<dict>
 		<key>OPENAI_API_KEY</key>
 		<string></string>
+		<key>TEXT_TO_ICS_DEFAULT_LENGTH</key>
+		<string></string>
+		<key>TEXT_TO_ICS_LOOKBACK_DAYS</key>
+		<string></string>
 		<key>TEXT_TO_ICS_MODEL</key>
+		<string></string>
+		<key>TEXT_TO_ICS_REMINDERS</key>
 		<string></string>
 		<key>TEXT_TO_ICS_TZ</key>
 		<string></string>
@@ -274,7 +402,7 @@ The OpenAI key goes in the configuration above, or in ~/.config/openai-key.</str
 		<string>OPENAI_API_KEY</string>
 	</array>
 	<key>version</key>
-	<string>1.1.4</string>
+	<string>1.1.5</string>
 	<key>webaddress</key>
 	<string>https://github.com/hendryque/alfred-text-to-ics</string>
 </dict>

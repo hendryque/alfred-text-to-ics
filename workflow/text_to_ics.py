@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore", message="urllib3 v2 only supports")
 
 import calendar
 import os
+import re
 import sys
 import json
 import subprocess
@@ -74,8 +75,11 @@ def _vtimezone(tz_name):
     return "\n".join(lines)
 
 
-MODEL = os.environ.get("TEXT_TO_ICS_MODEL", "").strip() or "gpt-4.1"
-DEFAULT_DURATION_HOURS = 2
+MODEL = os.environ.get("TEXT_TO_ICS_MODEL", "").strip() or "gpt-6-luna"
+DEFAULT_REASONING = "low"
+DEFAULT_LENGTH = "2h"
+DEFAULT_REMINDERS = "1d, 1h"
+DEFAULT_LOOKBACK_DAYS = 30
 # Fallback zone for events whose location implies nothing. Override with
 # TEXT_TO_ICS_TZ, or leave it to follow the Mac's own setting. Every zone in use
 # gets a VTIMEZONE block built from its real transition rules, so this is
@@ -169,10 +173,14 @@ Date anchor:
   a day and month are written.
 Rules:
 - Extract ALL events found in the text
+- Create an event only when the text gives its date, as a calendar date or a
+  relative one ("today", "tomorrow", "Friday", "every Monday", "Christmas", "in March").
+  A title or a time alone is not enough: return no event, and never assume today
 - Use 24-hour time format
 - If no specific start time, set start_time to null
 - Set end_date only for a continuous span (trip, stay, holiday, multi-day fair)
-- If hours repeat on each day of a span, emit one event per day and no end_date
+- If hours repeat on each day of a span ("open daily 10-18", "täglich 10-18 Uhr"),
+  emit one event per day and no end_date
 - Times are always the LOCAL wall-clock time at the event's location
 - Set timezone to the IANA identifier implied by the location (e.g. a Bangkok
   hotel booking -> "Asia/Bangkok"), but only when the location makes it
@@ -250,6 +258,18 @@ def get_input_text():
     fail("No input text")
 
 
+def model_options():
+    """Reasoning and Fast mode for the request; "default" leaves the choice to the model."""
+    options = {}
+    level = os.environ.get("TEXT_TO_ICS_REASONING", "").strip().lower() or DEFAULT_REASONING
+    if level != "default":
+        options["reasoning_effort"] = level
+    # Alfred passes a checkbox as 1 or 0. Unset means the default, which is on.
+    if os.environ.get("TEXT_TO_ICS_FAST", "").strip().lower() not in ("0", "false"):
+        options["service_tier"] = "fast"
+    return options
+
+
 def extract_events(text, api_key):
     now = datetime.now()
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
@@ -265,7 +285,7 @@ def extract_events(text, api_key):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ],
-        "temperature": 0.0,
+        **model_options(),
     }
     req = urllib.request.Request(
         API_URL,
@@ -286,6 +306,8 @@ def extract_events(text, api_key):
             fail("OpenAI account is out of credits. Add credits at platform.openai.com > Billing.", detail)
         if exc.code == 429:
             fail("Rate limited by OpenAI (429). Wait a minute and try again.", detail)
+        if exc.code == 400 and "reasoning_effort" in error_body:
+            fail("This model refuses the reasoning setting. Set Reasoning to Model default in the workflow configuration.", detail)
         fail(f"OpenAI returned HTTP {exc.code}.", detail)
     except urllib.error.URLError as exc:
         # No response object exists here, so nothing may reference one.
@@ -328,9 +350,20 @@ def written_start(event, span, cutoff):
     return None
 
 
+def lookback_days():
+    """How far back a date may lie. A bad setting must not cost the event."""
+    value = os.environ.get("TEXT_TO_ICS_LOOKBACK_DAYS", "").strip()
+    if not value:
+        return DEFAULT_LOOKBACK_DAYS
+    if value.isdecimal() and int(value) <= 3650:
+        return int(value)
+    print(f"Ignoring invalid lookback days: {value}", file=sys.stderr)
+    return DEFAULT_LOOKBACK_DAYS
+
+
 def resolve_events(events, now):
     """Settle each event's dates. Returns the events to keep, and notes for the user."""
-    cutoff = (now - timedelta(days=30)).date()
+    cutoff = (now - timedelta(days=lookback_days())).date()
     # A fair with daily hours is one event per day, and the model may give them
     # all the first day as written. Their own guesses still say how far apart they are.
     earliest = {}
@@ -403,6 +436,45 @@ def last_day(event, start):
     return end
 
 
+def parse_span(text):
+    """A timedelta for '90m', '2h' or '1d'; None when the text is not one of those."""
+    match = re.fullmatch(r"(\d{1,5})([mhd])", text.strip().lower())
+    if not match:
+        return None
+    return timedelta(minutes=int(match.group(1)) * {"m": 1, "h": 60, "d": 1440}[match.group(2)])
+
+
+def default_length():
+    """How long an event with a start but no end runs. A bad setting must not cost the event."""
+    value = os.environ.get("TEXT_TO_ICS_DEFAULT_LENGTH", "").strip()
+    length = parse_span(value or DEFAULT_LENGTH)
+    if not length:
+        print(f"Ignoring invalid default length: {value}", file=sys.stderr)
+        length = parse_span(DEFAULT_LENGTH)
+    return length
+
+
+def reminders():
+    """How long before each event to alert; empty for the setting "none"."""
+    value = os.environ.get("TEXT_TO_ICS_REMINDERS", "").strip().lower() or DEFAULT_REMINDERS
+    if value == "none":
+        return []
+    spans = [parse_span(part) for part in re.split(r"[,\s]+", value) if part]
+    if None in spans:
+        print(f"Ignoring invalid reminders: {value}", file=sys.stderr)
+        spans = [parse_span(part) for part in DEFAULT_REMINDERS.split(",")]
+    return spans
+
+
+def alarm_trigger(before):
+    minutes = int(before.total_seconds() // 60)
+    if minutes and minutes % 1440 == 0:
+        return f"-P{minutes // 1440}D"
+    if minutes and minutes % 60 == 0:
+        return f"-PT{minutes // 60}H"
+    return f"-PT{minutes}M"
+
+
 def ics_escape(text):
     if not text:
         return ""
@@ -412,6 +484,8 @@ def ics_escape(text):
 def build_ics(events):
     lines = []
     zones = []
+    length = default_length()
+    alarms = reminders()
     for ev in events:
         try:
             dt = datetime.strptime(ev["date"], "%Y-%m-%d")
@@ -437,7 +511,7 @@ def build_ics(events):
                 if dt_end <= dt_start:
                     dt_end += timedelta(days=1)
             else:
-                dt_end = dt_last.replace(hour=h, minute=m) + timedelta(hours=DEFAULT_DURATION_HOURS)
+                dt_end = dt_last.replace(hour=h, minute=m) + length
             lines.append(f"DTSTART;TZID={tz_name}:{dt_start.strftime('%Y%m%dT%H%M%S')}")
             lines.append(f"DTEND;TZID={tz_name}:{dt_end.strftime('%Y%m%dT%H%M%S')}")
         else:
@@ -461,17 +535,12 @@ def build_ics(events):
         now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         lines.append(f"DTSTAMP:{now}")
 
-        # Alerts: 1 day and 1 hour before
-        lines.append("BEGIN:VALARM")
-        lines.append("TRIGGER:-P1D")
-        lines.append("ACTION:DISPLAY")
-        lines.append(f"DESCRIPTION:{ics_escape(ev.get('summary', 'Event'))}")
-        lines.append("END:VALARM")
-        lines.append("BEGIN:VALARM")
-        lines.append("TRIGGER:-PT1H")
-        lines.append("ACTION:DISPLAY")
-        lines.append(f"DESCRIPTION:{ics_escape(ev.get('summary', 'Event'))}")
-        lines.append("END:VALARM")
+        for before in alarms:
+            lines.append("BEGIN:VALARM")
+            lines.append(f"TRIGGER:{alarm_trigger(before)}")
+            lines.append("ACTION:DISPLAY")
+            lines.append(f"DESCRIPTION:{ics_escape(ev.get('summary', 'Event'))}")
+            lines.append("END:VALARM")
 
         lines.append("END:VEVENT")
 
@@ -514,10 +583,7 @@ def main():
         api_key = load_api_key()
         events, notes = resolve_events(extract_events(text, api_key), datetime.now())
         if not events:
-            if notes:
-                fail(" ".join(notes))
-            print("No events found in text")
-            return
+            fail(" ".join(notes) or "No events found in text")
 
         ics_content = build_ics(events)
 

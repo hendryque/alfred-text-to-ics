@@ -45,7 +45,8 @@ cal Dentist on 15 October at 9:30, Dr Berger, Vienna
 ```
 
 A date with no year means its next occurrence, so in November `Sa 20.2.` is next
-February. Only a date from the last 30 days stays where it is. When a written
+February. Only a date from the last 30 days stays where it is (see
+`TEXT_TO_ICS_LOOKBACK_DAYS` below). When a written
 weekday does not fit the date, the date wins and the notification says so.
 
 Events more than 30 days in the past are dropped, on the assumption they are
@@ -58,18 +59,33 @@ A continuous span becomes one multi-day entry: a holiday flat booked from the
 that repeat on each day, you get one entry per day, so a fair open 10 to 18
 leaves the evenings in between free.
 
-Each event gets two reminders, one day before and one hour before.
+Each event gets two reminders, one day before and one hour before, and runs for
+two hours when the text gives a start but no end. Both can be changed below.
 
 ## Configuration
 
-All three are optional and live in the workflow configuration, or as
+All are optional and live in the workflow configuration, or as
 environment variables if you run the script directly.
 
 | Setting | Default | Notes |
 |---|---|---|
 | `OPENAI_API_KEY` | reads `~/.config/openai-key` | |
-| `TEXT_TO_ICS_MODEL` | `gpt-4.1` | Any chat model that supports structured output |
+| `TEXT_TO_ICS_MODEL` | `gpt-6-luna` | Any chat model that supports structured output |
+| `TEXT_TO_ICS_REASONING` | `low` | `none`, `low`, `medium` or `high`; `default` sends nothing and lets the model decide |
+| `TEXT_TO_ICS_FAST` | on | OpenAI's Fast mode: quicker, at twice the price; `0` turns it off |
 | `TEXT_TO_ICS_TZ` | the Mac's own zone | IANA name, for example `America/New_York` |
+| `TEXT_TO_ICS_LOOKBACK_DAYS` | `30` | How far back a date may lie, 0 to 3650 |
+| `TEXT_TO_ICS_REMINDERS` | `1d, 1h` | Times before the event, like `30m` or `2h`, separated by commas; `0m` is at the start, `none` turns them off |
+| `TEXT_TO_ICS_DEFAULT_LENGTH` | `2h` | For an event with a start but no end, like `45m` or `3h` |
+
+Fast mode and low reasoning are the defaults because this runs while you wait.
+With a different model, some settings may not apply: `gpt-4.1`, for one, refuses a
+reasoning level, so it needs Reasoning set to `default`.
+
+The lookback does two things. A date with no year that is older moves to its next
+occurrence, and a date with a year that is older is dropped. With `0`, anything
+before today counts as older. From about `365` up, a date with no year no longer
+moves ahead, because this year's or last year's occurrence is always in range.
 
 The time zone matters. Events are written with an explicit `VTIMEZONE` block
 built from that zone's real offsets, so daylight saving is handled wherever you
@@ -112,9 +128,10 @@ platform.openai.com; retrying will not help until you do.
 **Rate limited by OpenAI (429).** Too many requests in a short time. Wait and
 retry.
 
-**No events found in text.** The model found no event in the text at all.
+**No events found in text.** The model found no event in the text at all. An
+event needs a date, so `lunch with anna at 12` needs a `today` or a `Friday`.
 
-**Skipped 1 past event.** Its date is more than 30 days gone, either because you
+**Skipped 1 past event.** Its date is older than the lookback, either because you
 wrote that year or because the model resolved a relative date that way. The
 message names it and the date it got.
 
@@ -123,6 +140,9 @@ fit its date.
 
 **Skipped ...: no usable date.** One event came back malformed; the rest still go
 through.
+
+**This model refuses the reasoning setting.** Set Reasoning to Model default in
+the workflow configuration.
 
 **Nothing happens at all.** A failure normally shows as an alert, so
 silence points at the workflow rather than at OpenAI: check that
